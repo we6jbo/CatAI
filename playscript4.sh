@@ -1,6 +1,4 @@
 #!/bin/bash
-exit
-
 set -euo pipefail
 chmod +x /opt/cataised/install_startup.sh
 
