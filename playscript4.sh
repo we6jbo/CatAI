@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+mv /opt/cataised/playscript2.sh /opt/cataised/playscript2_OLD.sh
 chmod +x /opt/cataised/install_startup.sh
 
 BASE_DIR="/opt/cataised"
