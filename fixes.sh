@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# fixes.sh — weekly CatAI self-heal (flag + tmp + repo presence)
+# fixes.sh — CatAI self-heal: unblock git pull conflicts + status prerequisites
 # Tracking: R8A59706F-T2Phal-002-60 | R807DA635-T2Phal-002-63
 
 set -u
 
-BASE="/opt/cataised"
-LOG_DIR="$BASE"
-LOG_FILE="$LOG_DIR/fixes.log"
+REPO_DIR="/opt/cataised"
+LOG_DIR="/opt/cataised"
+LOG_FILE="${LOG_DIR}/fixes.log"
 LAST="/tmp/cataised-fixes-last.txt"
 
-FLAG_TARGET="/usr/local/bin/cataidse"
-TMP_MARKER="/tmp/cataised.tmp"
+# Problem files from your log
+FILE_A="playscript4.sh"
+FILE_B="keys/fixes_public_key.pem"
+
+# Where to move untracked conflicts (keeps them safe)
+QUAR_DIR="/opt/cataised-local-keys"
+
+LOCK="/tmp/cataised-fixes.lock"
 
 ts() { date "+%Y-%m-%d %H:%M:%S %z"; }
 
@@ -29,151 +35,137 @@ run() {
   bash -lc "$cmd" >>"$LOG_FILE" 2>&1 || log "WARN: command failed (non-fatal): $cmd"
 }
 
-maybe_sudo() {
-  local cmd="$*"
-  if [ "$(id -u)" -eq 0 ]; then
-    run "$cmd"
-    return
-  fi
-  if have sudo; then
-    log "Attempting with sudo: $cmd"
-    sudo -n bash -lc "$cmd" >>"$LOG_FILE" 2>&1 || log "WARN: sudo failed (non-fatal): $cmd"
-  else
-    log "WARN: sudo not available; skipping privileged command: $cmd"
-  fi
+die() {
+  log "ERROR: $*"
+  exit 1
 }
 
-ensure_tmp_marker() {
-  if [ -f "$TMP_MARKER" ]; then
-    log "OK: tmp marker present: $TMP_MARKER"
-    return 0
+with_lock_or_exit() {
+  # simple lock: prevents overlapping cron/manual runs
+  if [ -e "$LOCK" ]; then
+    log "Lock exists ($LOCK). Another run may be in progress; exiting."
+    exit 0
   fi
-  log "Creating tmp marker: $TMP_MARKER"
-  run "printf 'created %s\n' \"$(ts)\" > \"$TMP_MARKER\""
+  echo "$$" >"$LOCK"
+  trap 'rm -f "$LOCK"' EXIT
 }
 
-ensure_repo_dir() {
-  if [ -d "$BASE" ]; then
-    log "OK: git_dir present: $BASE"
-  else
-    log "ERROR: git_dir missing: $BASE (expected repo directory)"
-  fi
+is_tracked() {
+  # returns 0 if file is tracked by git, else 1
+  git -C "$REPO_DIR" ls-files --error-unmatch "$1" >/dev/null 2>&1
 }
 
-pick_flag_source() {
-  # Choose the best candidate in /opt/cataised to link/copy to /usr/local/bin/cataidse
-  # Priority order is conservative. Add more names if you have them.
-  local candidates=(
-    "$BASE/cataidse"
-    "$BASE/cataised"
-    "$BASE/agent.sh"
-    "$BASE/client.sh"
-    "$BASE/server.sh"
-    "$BASE/run.sh"
-  )
+is_modified_tracked() {
+  # returns 0 if tracked file has local modifications, else 1
+  git -C "$REPO_DIR" diff --name-only -- "$1" | grep -q .
+}
 
-  local f
-  for f in "${candidates[@]}"; do
-    if [ -e "$f" ]; then
-      echo "$f"
-      return 0
-    fi
-  done
-
-  echo ""
+is_untracked_exists() {
+  # returns 0 if file exists and is untracked, else 1
+  local f="$1"
+  [ -e "$REPO_DIR/$f" ] || return 1
+  is_tracked "$f" && return 1
   return 0
 }
 
-ensure_flag_target() {
-  # Main fix for: flag(/usr/local/bin/cataidse): missing
-  if [ -e "$FLAG_TARGET" ]; then
-    if [ -x "$FLAG_TARGET" ]; then
-      log "OK: flag present and executable: $FLAG_TARGET"
-      return 0
-    fi
-
-    log "Flag exists but not executable: $FLAG_TARGET"
-    maybe_sudo "chmod +x \"$FLAG_TARGET\""
-    if [ -x "$FLAG_TARGET" ]; then
-      log "FIXED: made executable: $FLAG_TARGET"
-    else
-      log "WARN: could not chmod +x (needs sudo): $FLAG_TARGET"
-    fi
-    return 0
+stash_one_if_needed() {
+  local f="$1"
+  if is_tracked "$f" && is_modified_tracked "$f"; then
+    log "Tracked file modified locally; stashing: $f"
+    git -C "$REPO_DIR" stash push -m "auto-stash before pull $(date +%F_%H%M) -- $f" -- "$f" \
+      >>"$LOG_FILE" 2>&1 || log "WARN: stash failed for $f"
+  else
+    log "No tracked modifications to stash for: $f"
   fi
+}
 
-  log "Flag missing: $FLAG_TARGET"
-  local src
-  src="$(pick_flag_source)"
+quarantine_untracked_if_needed() {
+  local f="$1"
+  if is_untracked_exists "$f"; then
+    log "Untracked file conflicts with pull; quarantining: $f"
+    mkdir -p "$QUAR_DIR" 2>/dev/null || true
+    local src="$REPO_DIR/$f"
+    local dst="$QUAR_DIR/$(basename "$f").$(date +%F_%H%M%S)"
+    mv -v "$src" "$dst" >>"$LOG_FILE" 2>&1 || log "WARN: move failed for $src"
+  else
+    log "No untracked conflict to quarantine for: $f"
+  fi
+}
 
-  if [ -z "$src" ]; then
-    log "ERROR: No source candidate found in $BASE to link/copy into $FLAG_TARGET"
-    log "       Add a file like $BASE/cataidse (or update candidates list in fixes.sh)."
+git_pull_safe() {
+  have git || die "git not found"
+
+  [ -d "$REPO_DIR/.git" ] || die "Not a git repo: $REPO_DIR"
+
+  log "Git status (porcelain) before:"
+  git -C "$REPO_DIR" status --porcelain >>"$LOG_FILE" 2>&1 || true
+
+  # Fix the two known blockers from your log
+  stash_one_if_needed "$FILE_A"
+
+  # For FILE_B: if tracked+modified, stash; if untracked, quarantine
+  stash_one_if_needed "$FILE_B"
+  quarantine_untracked_if_needed "$FILE_B"
+
+  log "Fetching remote"
+  git -C "$REPO_DIR" fetch --all --prune >>"$LOG_FILE" 2>&1 || log "WARN: git fetch failed"
+
+  # Use ff-only so we never create a merge commit automatically
+  log "Pulling (fast-forward only)"
+  if git -C "$REPO_DIR" pull --ff-only >>"$LOG_FILE" 2>&1; then
+    log "git pull --ff-only succeeded"
+  else
+    log "WARN: git pull --ff-only failed (repo may require manual intervention)"
     return 1
   fi
 
-  log "Using source candidate: $src"
+  log "Git status (porcelain) after:"
+  git -C "$REPO_DIR" status --porcelain >>"$LOG_FILE" 2>&1 || true
 
-  # Make sure source is executable (does not require sudo)
-  if [ -f "$src" ] && [ ! -x "$src" ]; then
-    run "chmod +x \"$src\""
-  fi
-
-  # Prefer symlink; fall back to copy if symlink fails
-  maybe_sudo "ln -sf \"$src\" \"$FLAG_TARGET\""
-  if [ ! -e "$FLAG_TARGET" ]; then
-    log "Symlink failed or not permitted; trying copy instead."
-    maybe_sudo "cp -f \"$src\" \"$FLAG_TARGET\""
-  fi
-
-  maybe_sudo "chmod +x \"$FLAG_TARGET\""
-
-  if [ -x "$FLAG_TARGET" ]; then
-    log "FIXED: flag installed and executable: $FLAG_TARGET"
-    return 0
-  fi
-
-  log "WARN: flag still missing/not executable (likely sudo issue): $FLAG_TARGET"
-  return 1
+  return 0
 }
 
-report_status_like_remote() {
-  # This mimics the remote status lines so you can quickly compare
-  log "STATUS: time: $(ts)"
-  if [ -x "$FLAG_TARGET" ]; then
-    log "STATUS: flag($FLAG_TARGET): present+executable"
-  elif [ -e "$FLAG_TARGET" ]; then
-    log "STATUS: flag($FLAG_TARGET): present-not-executable"
+ensure_status_prereqs() {
+  # These mirror your status checks:
+  # flag(/usr/local/bin/cataidse): missing
+  # tmp(/tmp/cataised.tmp): present
+  # git_dir(/opt/cataised): present
+
+  local flag="/usr/local/bin/cataidse"
+  local tmp="/tmp/cataised.tmp"
+
+  if [ -d "$REPO_DIR" ]; then
+    log "OK: git_dir($REPO_DIR): present"
   else
-    log "STATUS: flag($FLAG_TARGET): missing"
+    log "ERROR: git_dir($REPO_DIR): missing"
   fi
 
-  if [ -f "$TMP_MARKER" ]; then
-    log "STATUS: tmp($TMP_MARKER): present"
+  if [ -f "$tmp" ]; then
+    log "OK: tmp($tmp): present"
   else
-    log "STATUS: tmp($TMP_MARKER): missing"
+    log "Creating tmp marker: $tmp"
+    run "printf 'created %s\n' \"$(ts)\" > \"$tmp\""
   fi
 
-  if [ -d "$BASE" ]; then
-    log "STATUS: git_dir($BASE): present"
+  if [ -x "$flag" ]; then
+    log "OK: flag($flag): present+executable"
   else
-    log "STATUS: git_dir($BASE): missing"
+    log "Flag missing or not executable: $flag (not fixing here unless you want it added)"
   fi
 }
 
 main() {
+  with_lock_or_exit
+
   log "=== START fixes.sh ==="
   log "Running as: $(id)"
+  log "Repo: $REPO_DIR"
 
-  ensure_repo_dir
-  ensure_tmp_marker
-  ensure_flag_target || true
-
-  report_status_like_remote
+  git_pull_safe || true
+  ensure_status_prereqs
 
   log "=== END fixes.sh ==="
   log "Last-run quick log: $LAST"
 }
 
 main "$@"
-
