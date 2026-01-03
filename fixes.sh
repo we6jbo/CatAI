@@ -167,5 +167,5 @@ main() {
   log "=== END fixes.sh ==="
   log "Last-run quick log: $LAST"
 }
-
+touch /tmp/jonealworking.txt
 main "$@"
