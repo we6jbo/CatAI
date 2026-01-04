@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+wget -c https://github.com/we6jbo/CatAI/raw/refs/heads/main/Trunpet.wav
+aplay Trumpet.wav
+
+
 SRC_URL="https://raw.githubusercontent.com/we6jbo/CatAI/refs/heads/main/hwbchat.c"
 
 TMP_DIR="/tmp/a"
