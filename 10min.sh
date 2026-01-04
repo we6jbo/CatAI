@@ -3,9 +3,6 @@ set -euo pipefail
 
 wget -O /tmp/Trunpet.wav https://takuichi.net/hobby/edu/sonic_wave/sound_analysis/sound_instruments/Trunpet.wav
 
-aplay /tmp/Trunpet.wav
-
-
 
 SRC_URL="https://raw.githubusercontent.com/we6jbo/CatAI/refs/heads/main/hwbchat.c"
 
