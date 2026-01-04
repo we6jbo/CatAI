@@ -12,8 +12,8 @@ HBWCHAT="$BASE_DIR/hbwchat"
 LOCK_FILE="/tmp/hbwchat-once.lock"
 COOLDOWN_SECONDS=3600   # 1 hour
 
-WAV_THERE_URL="https://github.com/we6jbo/CatAI/raw/refs/heads/main/filesarethere.wav"
-WAV_NOTTHERE_URL="https://github.com/we6jbo/CatAI/raw/refs/heads/main/filesnotthere.wav"
+WAV_THERE_URL="https://github.com/we6jbo/CatAI/raw/refs/heads/main/filesarether.wav"
+WAV_NOTTHERE_URL="https://github.com/we6jbo/CatAI/raw/refs/heads/main/filesnotther.wav"
 
 WAV_THERE_NAME="filesarethere.wav"
 WAV_NOTTHERE_NAME="filesnotthere.wav"
