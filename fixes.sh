@@ -9,9 +9,10 @@ LOG_DIR="/opt/cataised"
 LOG_FILE="${LOG_DIR}/fixes.log"
 LAST="/tmp/cataised-fixes-last.txt"
 
-# Problem files from your log
-FILE_A="playscript4.sh"
-FILE_B="keys/fixes_public_key.pem"
+# Problem files from your log (examples; script now stashes *everything*)
+FILE_A="10min.sh"
+FILE_B="playscript4.sh"
+FILE_C="keys/fixes_public_key.pem"
 
 # Where to move untracked conflicts (keeps them safe)
 QUAR_DIR="/opt/cataised-local-keys"
@@ -68,6 +69,23 @@ is_untracked_exists() {
   return 0
 }
 
+
+stash_all_if_needed() {
+  # Stash *all* local changes (including untracked files) so git pull can run cleanly.
+  # This prevents errors like:
+  #   "Your local changes to the following files would be overwritten by merge"
+  # and ensures new files can be pulled from GitHub.
+  local porcelain
+  porcelain="$(git -C "$REPO_DIR" status --porcelain 2>/dev/null || true)"
+  if [ -n "$porcelain" ]; then
+    log "Local changes detected; stashing ALL changes (including untracked)"
+    git -C "$REPO_DIR" stash push -u -m "auto-stash before pull $(date +%F_%H%M%S)" \
+      >>"$LOG_FILE" 2>&1 || log "WARN: stash-all failed (non-fatal)"
+  else
+    log "Working tree clean; no stash needed"
+  fi
+}
+
 stash_one_if_needed() {
   local f="$1"
   if is_tracked "$f" && is_modified_tracked "$f"; then
@@ -100,20 +118,20 @@ git_pull_safe() {
   log "Git status (porcelain) before:"
   git -C "$REPO_DIR" status --porcelain >>"$LOG_FILE" 2>&1 || true
 
-  # Fix the two known blockers from your log
-  stash_one_if_needed "$FILE_A"
-
-  # For FILE_B: if tracked+modified, stash; if untracked, quarantine
-  stash_one_if_needed "$FILE_B"
-  quarantine_untracked_if_needed "$FILE_B"
+# Stash everything so pulls never fail due to local edits or untracked files
+stash_all_if_needed
 
   log "Fetching remote"
   git -C "$REPO_DIR" fetch --all --prune >>"$LOG_FILE" 2>&1 || log "WARN: git fetch failed"
 
   # Use ff-only so we never create a merge commit automatically
-  log "Pulling (fast-forward only)"
+  log "Pulling updates from remote (fast-forward only)"
   if git -C "$REPO_DIR" pull --ff-only >>"$LOG_FILE" 2>&1; then
     log "git pull --ff-only succeeded"
+
+log "NOTE: Any stashed local changes remain saved. To restore later:"
+log "  cd $REPO_DIR && git stash list"
+log "  cd $REPO_DIR && git stash pop"
   else
     log "WARN: git pull --ff-only failed (repo may require manual intervention)"
     return 1
